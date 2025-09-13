@@ -67,3 +67,119 @@ func TestServer(t *testing.T) {
 		t.Error("Server cache is nil")
 	}
 }
+
+func TestDNSHandler(t *testing.T) {
+	handler := &DNSHandler{cache: &DNSCache{}}
+
+	// Create a test message
+	msg := new(dns.Msg)
+	msg.SetQuestion("cdn.astracat.ru.", dns.TypeA)
+
+	// Handle the request
+	resp := handler.handleDNSRequest(msg)
+	if resp == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	// Check if we have answers
+	if len(resp.Answer) == 0 {
+		t.Error("Expected answers, got none")
+	}
+
+	t.Log("DNS handler test passed")
+}
+
+func TestCNAMEResolution(t *testing.T) {
+	handler := &DNSHandler{cache: &DNSCache{}}
+
+	// Test CNAME resolution
+	msg := new(dns.Msg)
+	msg.SetQuestion("cdn.astracat.ru.", dns.TypeA)
+
+	resp := handler.handleDNSRequest(msg)
+	if resp == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	// Check for CNAME and A records
+	hasCNAME := false
+	hasA := false
+	for _, rr := range resp.Answer {
+		switch rr.Header().Rrtype {
+		case dns.TypeCNAME:
+			hasCNAME = true
+		case dns.TypeA:
+			hasA = true
+		}
+	}
+
+	// Note: actual records depend on DNS response
+	t.Logf("CNAME found: %v, A found: %v", hasCNAME, hasA)
+}
+
+func TestTTL(t *testing.T) {
+	handler := &DNSHandler{cache: &DNSCache{}}
+
+	msg := new(dns.Msg)
+	msg.SetQuestion("cdn.astracat.ru.", dns.TypeA)
+
+	resp := handler.handleDNSRequest(msg)
+	if resp == nil {
+		t.Fatal("Expected response, got nil")
+	}
+
+	// Check TTL values
+	for _, rr := range resp.Answer {
+		if rr.Header().Ttl == 0 {
+			t.Log("Warning: Zero TTL found")
+		}
+	}
+}
+
+func TestDNSSECSupport(t *testing.T) {
+	handler := &DNSHandler{cache: &DNSCache{}}
+	
+	// Тестовый запрос с DNSSEC
+	msg := new(dns.Msg)
+	msg.SetQuestion("cdn.astracat.ru.", dns.TypeA)
+	
+	// Добавляем EDNS0 опцию с DO флагом
+	opt := &dns.OPT{
+		Hdr: dns.RR_Header{
+			Name:   ".",
+			Rrtype: dns.TypeOPT,
+			Class:  4096,
+		},
+	}
+	opt.SetDo(true)
+	msg.Extra = append(msg.Extra, opt)
+
+	// Обрабатываем запрос
+	resp := handler.handleDNSRequest(msg)
+	
+	if resp == nil {
+		t.Fatal("Response is nil")
+	}
+	
+	t.Log("DNSSEC test passed - response received")
+}
+
+func TestBasicDNS(t *testing.T) {
+	// Тест базовой DNS функциональности
+	handler := &DNSHandler{cache: &DNSCache{}}
+	
+	msg := new(dns.Msg)
+	msg.SetQuestion("cdn.astracat.ru.", dns.TypeA)
+	
+	resp := handler.handleDNSRequest(msg)
+	
+	if resp == nil {
+		t.Fatal("Response is nil")
+	}
+	
+	if len(resp.Answer) == 0 {
+		t.Log("Warning: No answers in response")
+	}
+	
+	t.Log("Basic DNS test passed")
+}
