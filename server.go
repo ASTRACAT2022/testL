@@ -64,7 +64,7 @@ func (s *Server) Start() error {
 	dns.HandleFunc(".", s.handleDNS)
 
 	server := &dns.Server{
-		Addr: ":5355",
+		Addr: ":5353",
 		Net:  "udp",
 	}
 
