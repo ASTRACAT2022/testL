@@ -14,20 +14,20 @@ if ! command -v go &> /dev/null; then
     source /etc/profile
 fi
 
-# Download dependencies and build the DNS server
-echo "Building DNS resolver..."
-go mod download
-go build -o /usr/local/bin/dns-resolver cmd/main.go
+# Build the Astracat DNS server
+echo "Building Astracat DNS..."
+go mod tidy
+go build -o /usr/local/bin/astracat-dns ./cmd
 
 # Create systemd service file
-cat << EOF | sudo tee /etc/systemd/system/dns-resolver.service
+cat << EOF | sudo tee /etc/systemd/system/astracat-dns.service
 [Unit]
-Description=DNS Resolver Service
+Description=Astracat DNS Resolver Service
 After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/dns-resolver
+ExecStart=/usr/local/bin/astracat-dns
 Restart=always
 User=nobody
 Group=nogroup
@@ -37,12 +37,12 @@ WantedBy=multi-user.target
 EOF
 
 # Set permissions
-sudo chmod +x /usr/local/bin/dns-resolver
+sudo chmod +x /usr/local/bin/astracat-dns
 
 # Reload systemd and enable service
 sudo systemctl daemon-reload
-sudo systemctl enable dns-resolver
-sudo systemctl start dns-resolver
+sudo systemctl enable astracat-dns
+sudo systemctl start astracat-dns
 
-echo "DNS Resolver installed and started successfully"
-echo "Check status with: systemctl status dns-resolver"
+echo "Astracat DNS Resolver installed and started successfully"
+echo "Check status with: systemctl status astracat-dns"
