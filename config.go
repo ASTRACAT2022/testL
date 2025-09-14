@@ -56,6 +56,11 @@ var (
 
 //---
 
+type Config struct {
+	// EnableDNSSEC enables DNSSEC validation.
+	EnableDNSSEC bool
+}
+
 // Cache Default (disabled) cache function.
 var Cache CacheInterface = nil
 

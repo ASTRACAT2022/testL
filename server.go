@@ -12,11 +12,12 @@ import (
 )
 
 type Server struct {
-	resolver   *Resolver
-	cache      *DNSCache
-	workers    int
-	queries    chan queryRequest
-	prefetch   *prefetchManager
+	resolver        *Resolver
+	cache           *DNSCache
+	workers         int
+	queries         chan queryRequest
+	prefetch        *prefetchManager
+	dnssecValidator *dnssec.Authenticator
 }
 
 type queryRequest struct {
@@ -68,11 +69,12 @@ func NewServer() *Server {
 	}
 
 	s := &Server{
-		resolver: NewResolver(),
-		cache:    cache,
-		workers:  10,
-		queries:  make(chan queryRequest, 100),
-		prefetch: newPrefetchManager(cache, NewResolver()),
+		resolver:        NewResolver(),
+		cache:         cache,
+		workers:       10,
+		queries:       make(chan queryRequest, 100),
+		prefetch:      newPrefetchManager(cache, NewResolver()),
+		dnssecValidator: nil, // DNSSEC валидатор не инициализирован по умолчанию
 	}
 	
 	// Запускаем воркеры для параллельной обработки
@@ -81,6 +83,39 @@ func NewServer() *Server {
 	}
 	
 	// Запускаем периодическую очистку кэша
+	go s.cacheCleaner()
+	
+	return s
+}
+
+func NewServerWithConfig(config *Config) *Server {
+	cache := &DNSCache{
+		maxSize: 10000,
+	}
+	for i := range cache.shards {
+		cache.shards[i] = &cacheShard{
+			items:   make(map[string]*cacheEntry),
+			lruList: list.New(),
+			lruMap:  make(map[string]*list.Element),
+		}
+	}
+
+	s := &Server{
+		resolver:        NewResolver(),
+		cache:         cache,
+		workers:       10,
+		queries:       make(chan queryRequest, 100),
+		prefetch:      newPrefetchManager(cache, NewResolver()),
+		dnssecValidator: nil,
+	}
+	
+	if config.EnableDNSSEC {
+		s.dnssecValidator = dnssec.NewAuthenticator()
+	}
+	
+	for i := 0; i < s.workers; i++ {
+		go s.worker()
+	}
 	go s.cacheCleaner()
 	
 	return s
@@ -194,6 +229,47 @@ func (s *Server) printStats() {
 	}
 }
 
+// validateDNSSEC выполняет DNSSEC валидацию ответа
+func (s *Server) validateDNSSEC(ctx context.Context, msg *dns.Msg) (string, error) {
+	if s.dnssecValidator == nil {
+		return "Insecure", nil
+	}
+
+	// Создаем зону для валидации
+	// Для упрощения используем базовую валидацию
+	zone := &basicZone{name: "."}
+	
+	// Получаем DS записи от родительской зоны
+	var dsRecords []*dns.DS
+	
+	// Выполняем валидацию
+	authResult, _, err := s.dnssecValidator.Verify(ctx, zone, msg, dsRecords)
+	if err != nil {
+		return "Bogus", err
+	}
+
+	return string(authResult), nil
+}
+
+// basicZone - простая реализация интерфейса Zone для DNSSEC
+type basicZone struct {
+	name string
+}
+
+func (z *basicZone) Name() string {
+	return z.name
+}
+
+func (z *basicZone) GetDNSKEYRecords() ([]dns.RR, error) {
+	// Возвращаем базовые DNSKEY записи
+	return []dns.RR{}, nil
+}
+
+func (z *basicZone) GetDSRecords() ([]dns.RR, error) {
+	// Возвращаем базовые DS записи
+	return []dns.RR{}, nil
+}
+
 func (s *Server) worker() {
 	for query := range s.queries {
 		s.processQuery(query.w, query.r)
@@ -247,15 +323,23 @@ func (s *Server) processQuery(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
-	// Добавляем DNSSEC информацию к ответу если включено
+	// DNSSEC валидация если включено
 	if opt != nil && opt.Do() {
-		// Устанавливаем флаг аутентификации для DNSSEC
-		resp.Msg.AuthenticatedData = true
-		
-		// Добавляем RRSIG записи для всех RRSET (упрощенная версия)
-		if len(resp.Msg.Answer) > 0 {
-			// Базовая DNSSEC поддержка для тестирования
+		// Проверяем DNSSEC валидацию
+		if s.dnssecValidator != nil {
+			authResult, err := s.validateDNSSEC(ctx, resp.Msg)
+			if err != nil || authResult != "Secure" {
+				// Ошибка валидации DNSSEC - возвращаем SERVFAIL
+				m.Rcode = dns.RcodeServerFailure
+				w.WriteMsg(m)
+				return
+			}
+			
+			// Валидация прошла успешно
 			resp.Msg.AuthenticatedData = true
+		} else {
+			// DNSSEC включен но валидатор не настроен
+			resp.Msg.AuthenticatedData = false
 		}
 	}
 

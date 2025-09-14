@@ -9,8 +9,14 @@ import (
 )
 
 func main() {
+	// Создаем конфигурацию с включенным DNSSEC
+	config := &resolver.Config{
+		EnableDNSSEC: true,
+		EnableCache:  true,
+	}
+
 	// Создаем и запускаем DNS сервер
-	server := resolver.NewServer()
+	server := resolver.NewServerWithConfig(config)
 
 	// Обработка сигналов для graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -24,7 +30,7 @@ func main() {
 		}
 	}()
 
-	fmt.Println("DNS server is running on port 5355")
+	fmt.Println("DNS server is running on port 5355 with DNSSEC enabled")
 	fmt.Println("Press Ctrl+C to stop")
 
 	// Ожидаем сигнал для завершения
