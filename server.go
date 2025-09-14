@@ -4,7 +4,10 @@ import (
 	"context"
 	"fmt"
 	"github.com/miekg/dns"
+	"github.com/nsmithuk/resolver/dnssec"
 	"hash/fnv"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -89,8 +92,13 @@ func NewServer() *Server {
 }
 
 func NewServerWithConfig(config *Config) *Server {
+	cacheSize := 100000 // Увеличиваем кэш в 10 раз для всех доменов
+	if config.CacheSize > 0 {
+		cacheSize = config.CacheSize
+	}
+	
 	cache := &DNSCache{
-		maxSize: 10000,
+		maxSize: cacheSize,
 	}
 	for i := range cache.shards {
 		cache.shards[i] = &cacheShard{
@@ -102,15 +110,15 @@ func NewServerWithConfig(config *Config) *Server {
 
 	s := &Server{
 		resolver:        NewResolver(),
-		cache:         cache,
-		workers:       10,
-		queries:       make(chan queryRequest, 100),
+		cache:           cache,
+		workers:       50,    // Увеличиваем количество воркеров
+		queries:       make(chan queryRequest, 1000), // Увеличиваем буфер
 		prefetch:      newPrefetchManager(cache, NewResolver()),
 		dnssecValidator: nil,
 	}
 	
 	if config.EnableDNSSEC {
-		s.dnssecValidator = dnssec.NewAuthenticator()
+		s.dnssecValidator = dnssec.NewAuth(context.Background(), dns.Question{})
 	}
 	
 	for i := 0; i < s.workers; i++ {
@@ -134,11 +142,11 @@ func newPrefetchManager(cache *DNSCache, resolver *Resolver) *prefetchManager {
 		cache:     cache,
 		resolver:  resolver,
 		popular:   make(map[string]int),
-		threshold: 5, // популярность - 5 запросов за последний период
+		threshold: 3, // уменьшаем порог для более агрессивного prefetch
 	}
 	
-	// Запускаем периодическое обновление популярных доменов
-	go pm.prefetchPopular()
+	// Запускаем периодическое обновление для всех доменов
+	go pm.prefetchAllDomains()
 	
 	return pm
 }
@@ -178,18 +186,21 @@ func (pm *prefetchManager) prefetchRecord(q dns.Question) {
 	}
 }
 
-func (pm *prefetchManager) prefetchPopular() {
-	ticker := time.NewTicker(5 * time.Minute)
+func (pm *prefetchManager) prefetchAllDomains() {
+	ticker := time.NewTicker(1 * time.Minute)
 	defer ticker.Stop()
 	
 	for range ticker.C {
 		pm.mu.Lock()
 		
-		// Очищаем старую статистику
-		for key := range pm.popular {
-			pm.popular[key] = 0
+		// Агрессивное prefetch для всех доменов из кэша
+		allDomains := pm.cache.getAllDomains()
+		for _, q := range allDomains {
+			go pm.prefetchRecord(q)
 		}
 		
+		// Очищаем статистику
+		pm.popular = make(map[string]int)
 		pm.mu.Unlock()
 	}
 }
@@ -239,16 +250,19 @@ func (s *Server) validateDNSSEC(ctx context.Context, msg *dns.Msg) (string, erro
 	// Для упрощения используем базовую валидацию
 	zone := &basicZone{name: "."}
 	
-	// Получаем DS записи от родительской зоны
-	var dsRecords []*dns.DS
-	
 	// Выполняем валидацию
-	authResult, _, err := s.dnssecValidator.Verify(ctx, zone, msg, dsRecords)
+	err := s.dnssecValidator.AddResponse(zone, msg)
 	if err != nil {
 		return "Bogus", err
 	}
 
-	return string(authResult), nil
+	// Получаем результат валидации
+	result, _, err := s.dnssecValidator.Result()
+	if err != nil {
+		return "Bogus", err
+	}
+
+	return string(result), nil
 }
 
 // basicZone - простая реализация интерфейса Zone для DNSSEC
@@ -419,12 +433,17 @@ func (c *DNSCache) set(q dns.Question, msg *dns.Msg) {
 		ttl = 300 // 5 минут
 	}
 	
-	// Ограничиваем максимальный TTL
-	if ttl > 3600 {
-		ttl = 3600 // max 1 hour
-	}
-	
-	expires := time.Now().Add(time.Duration(ttl) * time.Second)
+	// Увеличиваем максимальный TTL для максимального кэширования
+		if ttl > 86400 {
+			ttl = 86400 // max 24 hours
+		}
+		
+		// Минимальный TTL для предотвращения слишком частого обновления
+		if ttl < 60 {
+			ttl = 60 // min 1 minute
+		}
+		
+		expires := time.Now().Add(time.Duration(ttl) * time.Second)
 	
 	entry := &cacheEntry{
 		msg:       msg.Copy(),
@@ -537,6 +556,32 @@ func (c *DNSCache) Clear() {
 		shard.lruMap = make(map[string]*list.Element)
 		shard.mu.Unlock()
 	}
+}
+
+func (c *DNSCache) getAllDomains() []dns.Question {
+	var domains []dns.Question
+	
+	for _, shard := range c.shards {
+		shard.mu.RLock()
+		for key, entry := range shard.items {
+			if time.Now().Before(entry.expires) {
+				// Парсим ключ обратно в Question
+				parts := strings.Split(key, "-")
+				if len(parts) == 3 {
+					qtype, _ := strconv.Atoi(parts[1])
+					qclass, _ := strconv.Atoi(parts[2])
+					domains = append(domains, dns.Question{
+						Name:   parts[0],
+						Qtype:  uint16(qtype),
+						Qclass: uint16(qclass),
+					})
+				}
+			}
+		}
+		shard.mu.RUnlock()
+	}
+	
+	return domains
 }
 
 func (s *Server) cacheCleaner() {

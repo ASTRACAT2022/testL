@@ -9,10 +9,13 @@ import (
 )
 
 func main() {
-	// Создаем конфигурацию с включенным DNSSEC
+	// Создаем конфигурацию с максимальной производительностью
 	config := &resolver.Config{
-		EnableDNSSEC: true,
-		EnableCache:  true,
+		EnableDNSSEC:             true,
+		CacheSize:                100000,
+		MaxTTL:                   86400,
+		Workers:                  50,
+		EnableAggressivePrefetch: true,
 	}
 
 	// Создаем и запускаем DNS сервер

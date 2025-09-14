@@ -59,6 +59,21 @@ var (
 type Config struct {
 	// EnableDNSSEC enables DNSSEC validation.
 	EnableDNSSEC bool
+	
+	// CacheSize sets the size of the DNS cache in number of entries.
+	// If zero, a default of 100000 is used.
+	CacheSize int
+	
+	// MaxTTL sets the maximum TTL for cached records in seconds.
+	// If zero, a default of 86400 (24 hours) is used.
+	MaxTTL int
+	
+	// Workers sets the number of worker goroutines.
+	// If zero, a default of 50 is used.
+	Workers int
+	
+	// EnableAggressivePrefetch enables aggressive prefetching for all cached domains.
+	EnableAggressivePrefetch bool
 }
 
 // Cache Default (disabled) cache function.
