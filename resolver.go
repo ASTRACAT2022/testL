@@ -9,6 +9,7 @@ import (
 type Resolver struct {
 	zones zoneStore
 	funcs resolverFunctions
+	cache *DNSCache
 }
 
 // The core, top level, resolving functions. They're defined as variables to aid overriding them for testing.
@@ -18,11 +19,12 @@ type resolverFunctions struct {
 	createZone           func(ctx context.Context, name, parent string, nameservers []*dns.NS, extra []dns.RR, exchanger exchanger) (zone, error)
 	finaliseResponse     func(ctx context.Context, auth *authenticator, qmsg *dns.Msg, response *Response) *Response
 	processDelegation    func(ctx context.Context, z zone, rmsg *dns.Msg) (zone, *Response)
-	cname                func(ctx context.Context, qmsg *dns.Msg, r *Response, exchanger exchanger) error
+	cname                func(ctx context.Context, qmsg *dns.Msg, r *Response, exchanger exchanger, cache *DNSCache) error
 	getExchanger         func() exchanger
+	cache                *DNSCache
 }
 
-func NewResolver() *Resolver {
+func NewResolver(cache *DNSCache) *Resolver {
 	pool, err := buildRootServerPool()
 	if err != nil {
 		// Everything is technically static at this point.
@@ -37,6 +39,7 @@ func NewResolver() *Resolver {
 
 	resolver := &Resolver{
 		zones: z,
+		cache: cache,
 	}
 
 	// When not testing, we point to the concrete instances of the functions.
@@ -48,6 +51,7 @@ func NewResolver() *Resolver {
 		processDelegation:    resolver.processDelegation,
 		cname:                cname,
 		getExchanger:         resolver.getExchanger,
+		cache:                cache,
 	}
 
 	return resolver

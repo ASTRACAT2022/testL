@@ -72,11 +72,11 @@ func NewServer() *Server {
 	}
 
 	s := &Server{
-		resolver:        NewResolver(),
+		resolver:        NewResolver(cache),
 		cache:         cache,
 		workers:       10,
 		queries:       make(chan queryRequest, 100),
-		prefetch:      newPrefetchManager(cache, NewResolver()),
+		prefetch:      newPrefetchManager(cache, NewResolver(cache)),
 		dnssecValidator: nil, // DNSSEC валидатор не инициализирован по умолчанию
 	}
 	
@@ -109,11 +109,11 @@ func NewServerWithConfig(config *Config) *Server {
 	}
 
 	s := &Server{
-		resolver:        NewResolver(),
+		resolver:        NewResolver(cache),
 		cache:           cache,
 		workers:       50,    // Увеличиваем количество воркеров
 		queries:       make(chan queryRequest, 1000), // Увеличиваем буфер
-		prefetch:      newPrefetchManager(cache, NewResolver()),
+		prefetch:      newPrefetchManager(cache, NewResolver(cache)),
 		dnssecValidator: nil,
 	}
 	
@@ -257,12 +257,12 @@ func (s *Server) validateDNSSEC(ctx context.Context, msg *dns.Msg) (string, erro
 	}
 
 	// Получаем результат валидации
-	result, _, err := s.dnssecValidator.Result()
-	if err != nil {
-		return "Bogus", err
+	result, _, _ := s.dnssecValidator.Result()
+	if result == dnssec.Unknown {
+		return "Insecure", nil
 	}
 
-	return string(result), nil
+	return result.String(), nil
 }
 
 // basicZone - простая реализация интерфейса Zone для DNSSEC

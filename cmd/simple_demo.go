@@ -1,3 +1,16 @@
+// +build simple
+
+//go:build simple
+// +build simple
+
+//go:build simple
+
+//go:build simple
+
+//go:build simple
+
+//go:build simple
+
 //go:build simple
 
 package main

@@ -1,5 +1,3 @@
-//go:build concurrent
-
 package main
 
 import (

@@ -1,63 +1,48 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/bash
 
-# ------------------ 1. Проверяем, что Go уже есть ------------------
-if ! command -v go &>/dev/null; then
-    echo "❌  Go не найден. Установите Go вручную и перезапустите скрипт." >&2
-    exit 1
+# Install Go if not installed
+if ! command -v go &> /dev/null; then
+    echo "Installing Go..."
+    # Download latest Go
+    curl -O https://dl.google.com/go/$(curl -s https://go.dev/VERSION?m=text).linux-amd64.tar.gz
+    # Extract and install
+    sudo rm -rf /usr/local/go
+    sudo tar -C /usr/local -xzf go*.linux-amd64.tar.gz
+    rm go*.linux-amd64.tar.gz
+    # Add to PATH
+    echo 'export PATH=$PATH:/usr/local/go/bin' | sudo tee -a /etc/profile
+    source /etc/profile
 fi
-echo "✅  Найден Go: $(go version)"
 
-# ------------------ 2. Собираем проект -----------------------------
-PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"   # папка, где лежит скрипт
-BINARY_PATH="/usr/local/bin/astracat-dns"
-
-echo "📦  Скачиваем зависимости…"
-cd "$PROJECT_DIR"
+# Download dependencies and build the DNS server
+echo "Building DNS resolver..."
 go mod download
+go build -o /usr/local/bin/dns-resolver cmd/main.go
 
-echo "🔨  Компилируем…"
-go build -trimpath -ldflags="-s -w" -o "$BINARY_PATH" cmd/main.go
-
-# ------------------ 3. Создаём systemd-unit ------------------------
-SERVICE_FILE="/etc/systemd/system/astracat-dns.service"
-sudo tee "$SERVICE_FILE" >/dev/null <<'EOF'
+# Create systemd service file
+cat << EOF | sudo tee /etc/systemd/system/dns-resolver.service
 [Unit]
-Description=AstraCat DNS Resolver
-After=network-online.target
-Wants=network-online.target
+Description=DNS Resolver Service
+After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/astracat-dns
+ExecStart=/usr/local/bin/dns-resolver
 Restart=always
-RestartSec=5
 User=nobody
 Group=nogroup
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/cache/astracat-dns
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# ------------------ 4. Активируем сервис ---------------------------
-sudo systemctl daemon-reload
-sudo systemctl enable astracat-dns.service
-sudo systemctl restart astracat-dns.service
+# Set permissions
+sudo chmod +x /usr/local/bin/dns-resolver
 
-# ------------------ 5. Проверяем статус ----------------------------
-sleep 1
-if systemctl is-active --quiet astracat-dns; then
-    echo
-    echo "🎉  AstraCat DNS Resolver запущен!"
-    echo "   Проверить:  sudo systemctl status astracat-dns"
-    echo "   Логи:       sudo journalctl -u astracat-dns -f"
-else
-    echo
-    echo "⚠️  Сервис не поднялся. Смотри логи:"
-    echo "   sudo journalctl -u astracat-dns -n 50 --no-pager"
-    exit 1
-fi
+# Reload systemd and enable service
+sudo systemctl daemon-reload
+sudo systemctl enable dns-resolver
+sudo systemctl start dns-resolver
+
+echo "DNS Resolver installed and started successfully"
+echo "Check status with: systemctl status dns-resolver"

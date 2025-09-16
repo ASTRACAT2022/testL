@@ -31,16 +31,17 @@ func NewFastNameserverPool() *FastNameserverPool {
 	}
 }
 
-func (fp *FastNameserverPool) exchangeFast(ctx context.Context, servers []string, m *dns.Msg) (*dns.Msg, error) {
+func (fp *FastNameserverPool) exchangeFast(ctx context.Context, servers []string, m *dns.Msg) (*dns.Msg, time.Duration, error) {
 	if len(servers) == 0 {
-		return nil, fmt.Errorf("no nameservers available")
+		return nil, 0, fmt.Errorf("no nameservers available")
 	}
 
 	return fp.concurrentExchange(ctx, servers, m)
 }
 
-func (fp *FastNameserverPool) concurrentExchange(ctx context.Context, servers []string, m *dns.Msg) (*dns.Msg, error) {
-	resultChan := make(chan *dns.Msg, len(servers))
+func (fp *FastNameserverPool) concurrentExchange(ctx context.Context, servers []string, m *dns.Msg) (*dns.Msg, time.Duration, error) {
+	resultChan := make(chan struct { *dns.Msg; time.Duration }, len(servers))
+	errorChan := make(chan error, len(servers)) // New channel for errors
 	var wg sync.WaitGroup
 
 	fastCtx, cancel := context.WithTimeout(ctx, fp.fastTimeout)
@@ -51,10 +52,17 @@ func (fp *FastNameserverPool) concurrentExchange(ctx context.Context, servers []
 		go func(s string) {
 			defer wg.Done()
 
-			resp := fp.quickQuery(fastCtx, s, m)
+			resp, rtt, err := fp.quickQuery(fastCtx, s, m)
+			if err != nil {
+				select {
+				case errorChan <- err:
+				case <-fastCtx.Done():
+				}
+				return
+			}
 			if resp != nil {
 				select {
-				case resultChan <- resp:
+				case resultChan <- struct { *dns.Msg; time.Duration }{resp, rtt}:
 				case <-fastCtx.Done():
 				}
 			}
@@ -64,33 +72,36 @@ func (fp *FastNameserverPool) concurrentExchange(ctx context.Context, servers []
 	go func() {
 		wg.Wait()
 		close(resultChan)
+		close(errorChan) // Close error channel
 	}()
 
 	select {
-	case resp := <-resultChan:
-		return resp, nil
+	case res := <-resultChan:
+		return res.Msg, res.Duration, nil
+	case err := <-errorChan: // Handle error from quickQuery
+		return nil, 0, err
 	case <-fastCtx.Done():
-		return nil, context.DeadlineExceeded
+		return nil, 0, context.DeadlineExceeded
 	}
 }
 
-func (fp *FastNameserverPool) quickQuery(ctx context.Context, server string, m *dns.Msg) *dns.Msg {
+func (fp *FastNameserverPool) quickQuery(ctx context.Context, server string, m *dns.Msg) (*dns.Msg, time.Duration, error) {
 	client := &dns.Client{
 		Net:     "udp",
 		Timeout: 25 * time.Millisecond,
 		UDPSize: 512,
 	}
 
-	msg, _, err := client.ExchangeContext(ctx, m, server+":53")
-		if err != nil {
-			return nil
-		}
-		return msg
+	msg, rtt, err := client.ExchangeContext(ctx, m, server+":53")
+	if err != nil {
+		return nil, 0, err // Return the error
+	}
+	return msg, rtt, nil // Return nil for error if successful
 }
 
-func (fp *FastNameserverPool) exchangeWithFallback(ctx context.Context, servers []string, m *dns.Msg) (*dns.Msg, error) {
-	if resp, err := fp.exchangeFast(ctx, servers, m); err == nil && resp != nil {
-		return resp, nil
+func (fp *FastNameserverPool) exchangeWithFallback(ctx context.Context, servers []string, m *dns.Msg) (*dns.Msg, time.Duration, error) {
+	if resp, rtt, err := fp.exchangeFast(ctx, servers, m); err == nil && resp != nil {
+		return resp, rtt, nil
 	}
 
 	if len(servers) > 0 {
@@ -99,10 +110,10 @@ func (fp *FastNameserverPool) exchangeWithFallback(ctx context.Context, servers 
 			Timeout: 200 * time.Millisecond,
 			UDPSize: 512,
 		}
-		resp, _, err := client.ExchangeContext(ctx, m, servers[0]+":53")
-		return resp, err
+		msg, rtt, err := client.ExchangeContext(ctx, m, servers[0]+":53")
+		return msg, rtt, err
 	}
-	return nil, fmt.Errorf("no nameservers available")
+	return nil, 0, fmt.Errorf("no nameservers available")
 }
 
 func (fp *FastNameserverPool) measureLatency(servers []string) map[string]time.Duration {

@@ -316,7 +316,7 @@ func (resolver *Resolver) finaliseResponse(ctx context.Context, auth *authentica
 	// Follow any CNAME, if needed.
 	if qmsg.Question[0].Qtype != dns.TypeCNAME && recordsOfTypeExist(response.Msg.Answer, dns.TypeCNAME) {
 		// The results from this are added to `response.Msg`.
-		err := resolver.funcs.cname(ctx, qmsg, response, resolver.funcs.getExchanger())
+		err := resolver.funcs.cname(ctx, qmsg, response, resolver.funcs.getExchanger(), resolver.funcs.cache)
 		if err != nil {
 			return &Response{
 				Err: err,
